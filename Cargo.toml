@@ -1,0 +1,12 @@
+[package]
+name = "foo"
+version = "0.1.0"
+authors = ["Mikael Kvalvaer <mikaelkvalvaer@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = "0.5" # make sure this is the latest version
+rand = "0.8.3"
+itertools = "0.10.0"
