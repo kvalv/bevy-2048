@@ -1,16 +1,14 @@
+#![feature(destructuring_assignment)]
 use bevy::core::FixedTimestep;
-use std::collections::hash_set::HashSet;
 use bevy::prelude::*;
 use itertools::Itertools;
-use rand::prelude::*;
-use rand::thread_rng;
-use rand::seq::SliceRandom;
-use std::collections::HashMap;
+use std::collections::hash_set::HashSet;
+use std::collections::LinkedList;
 
 const WIDTH: u32 = 4;
 const HEIGHT: u32 = 4;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Block {
     value: u32,
     merged: bool,
@@ -103,87 +101,79 @@ fn block_color(mut q: Query<(&Block, &mut Handle<ColorMaterial>)>, materials: Re
     }
 }
 
+// Update values and positions along a range (a row or column)
+fn swipe_range(
+    dir: &Direction,
+    v: &mut Vec<(Mut<Block>, Mut<Position>, Entity)>,
+    cmd: &mut Commands,
+    maxlen: u32,
+) {
+    println!("vlen = {:?}", v.len());
+    if v.len() == 0 {
+        return;
+    }
+
+    if *dir == Direction::Right || *dir == Direction::Up {
+        v.reverse();
+    }
+    let mut g = v.iter_mut().collect::<LinkedList<_>>();
+
+    let (first_block, first_pos, first_ent) = g.pop_front().unwrap();
+    let mut block = first_block;
+    let mut pos = first_pos;
+    let mut ent = first_ent;
+    (pos.x, pos.y) = match dir {
+        Direction::Left => (0, pos.y),
+        Direction::Right => (maxlen - 1, pos.y),
+        Direction::Up => (pos.x, maxlen - 1),
+        Direction::Down => (pos.x, 0),
+    };
+    while let Some((mv_block, mv_pos, mv_ent)) = g.pop_front() {
+        if !block.merged && block.value == mv_block.value {
+            //
+            println!("merge event! ");
+            cmd.entity(*ent).despawn();
+            (mv_pos.x, mv_pos.y) = (pos.x, pos.y);
+            mv_block.value += 1;
+        } else {
+            (mv_pos.x, mv_pos.y) = match dir {
+                Direction::Left => (pos.x + 1, pos.y),
+                Direction::Right => (pos.x - 1, pos.y),
+                Direction::Up => (pos.x, pos.y - 1),
+                Direction::Down => (pos.x, pos.y + 1),
+            };
+        }
+        block = mv_block;
+        pos = mv_pos;
+        ent = mv_ent;
+    }
+}
+
 fn block_swipe(
     mut cmd: Commands,
     mut reader: EventReader<SwipeEvent>,
     mut q: Query<(&mut Block, &mut Position, Entity)>,
 ) {
-    for ev in reader.iter() {
-        //let m: HashMap<u32, u32>  = q.iter().map(|x| (x.x, x.x));
-        //let rows: HashMap<_, _> = q.iter_mut().map(|x| (x.y, x)).collect();
+    for SwipeEvent(dir) in reader.iter() {
 
-        if ev.0 == Direction::Up || ev.0 == Direction::Down {
-            let mut cols: HashMap<u32, Vec<_>> = HashMap::new();
-            for e in q.iter_mut() {
-                cols.entry(e.1.x).or_insert(Vec::new()).push(e);
-            }
-            for c in 0u32..WIDTH {
-                if let Some(v) = cols.get_mut(&c) {
-                    if ev.0 == Direction::Up {
-                        v.sort_by(|b, a| a.1.x.cmp(&b.1.x));
-                    } else {
-                        v.sort_by(|a, b| a.1.x.cmp(&b.1.x));
-                    }
-                    // bottom to top...
-                    for idx in 0..v.len() {
-                        if idx == 0 {
-                            if ev.0 == Direction::Down {
-                                v[0].1.y = 0;
-                            } else {
-                                v[0].1.y = HEIGHT - 1;
-                            }
-                        } else {
-                            let (left, right) = v.split_at_mut(idx);
-                            let (other_block, _, _) = left.last_mut().unwrap();
-                            if let Some((block, pos, ent)) = right.get_mut(0) {
-                                if block.value == other_block.value && !other_block.merged {
-                                    other_block.merged = true;
-                                    other_block.value += 1;
-                                    cmd.entity(*ent).despawn();
-                                } else {
-                                    pos.y = idx as u32;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            let mut rows: HashMap<u32, Vec<_>> = HashMap::new();
-            for e in q.iter_mut() {
-                rows.entry(e.1.y).or_insert(Vec::new()).push(e);
-            }
-            for r in 0u32..HEIGHT {
-                if let Some(v) = rows.get_mut(&r) {
-                    if ev.0 == Direction::Right {
-                        v.sort_by(|b, a| a.1.x.cmp(&b.1.x));
-                    } else {
-                        v.sort_by(|a, b| a.1.x.cmp(&b.1.x));
-                    }
-                    // bottom to top...
-                    for idx in 0..v.len() {
-                        if idx == 0 {
-                            if ev.0 == Direction::Left {
-                                v[0].1.x = 0;
-                            } else {
-                                v[0].1.x = HEIGHT - 1;
-                            }
-                        } else {
-                            let (left, right) = v.split_at_mut(idx);
-                            let (other_block, _, _) = left.last_mut().unwrap();
-                            if let Some((block, pos, ent)) = right.get_mut(0) {
-                                if block.value == other_block.value && !other_block.merged {
-                                    other_block.merged = true;
-                                    other_block.value += 1;
-                                    cmd.entity(*ent).despawn();
-                                } else {
-                                    pos.x = idx as u32;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        let groupby = q
+            .iter_mut()
+            .sorted_by_key(|e| match dir {
+                Direction::Left | Direction::Right => (e.1.y, e.1.x),
+                Direction::Up | Direction::Down => (e.1.x, e.1.y),
+            })
+            .group_by(|(_, pos, _)| match dir {
+                Direction::Up | Direction::Down => pos.x,
+                Direction::Left | Direction::Right => pos.y,
+            });
+
+        println!("------------------");
+
+        for (i, group) in groupby.into_iter() {
+            let mut v = group.collect::<Vec<_>>();
+            swipe_range(&dir, &mut v, &mut cmd, HEIGHT);
+            println!("{} {:?} {:?}", i, dir, v);
+
         }
 
         for (mut block, _, _) in q.iter_mut() {
@@ -191,19 +181,31 @@ fn block_swipe(
         }
     }
 }
+
+fn game_over(mut q: Query<Entity, With<Block>>, mut cmd: Commands) {
+    let max_nb_tiles = (HEIGHT * WIDTH) as usize;
+    if q.iter().count() == max_nb_tiles {
+        println!("Game over!");
+        for e in q.iter_mut() {
+            cmd.entity(e).despawn();
+        }
+        
+    }
+}
+
 fn setup(mut cmd: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
     cmd.spawn_bundle(OrthographicCameraBundle::new_2d());
     cmd.insert_resource(BlockColor {
-        block0: materials.add(Color::rgb(0.7, 0.1, 0.1).into()),
-        block1: materials.add(Color::rgb(0.5, 0.7, 0.1).into()),
-        block2: materials.add(Color::rgb(0.1, 0.1, 0.7).into()),
-        block3: materials.add(Color::rgb(0.1, 0.3, 0.3).into()),
-        block4: materials.add(Color::rgb(0.3, 0.3, 0.1).into()),
-        block5: materials.add(Color::rgb(0.3, 0.1, 0.3).into()),
-        block6: materials.add(Color::rgb(0.8, 0.8, 0.1).into()),
-        block7: materials.add(Color::rgb(0.1, 0.8, 0.8).into()),
-        block8: materials.add(Color::rgb(0.8, 0.1, 0.8).into()),
-        block9: materials.add(Color::rgb(0.4, 0.9, 0.1).into()),
+        block0: materials.add(Color::rgb(0.9, 0.9, 0.9).into()),
+        block1: materials.add(Color::rgb(0.8, 0.2, 0.8).into()),
+        block2: materials.add(Color::rgb(0.7, 0.7, 0.2).into()),
+        block3: materials.add(Color::rgb(0.6, 0.6, 0.6).into()),
+        block4: materials.add(Color::rgb(0.5, 0.2, 0.5).into()),
+        block5: materials.add(Color::rgb(0.4, 0.4, 0.2).into()),
+        block6: materials.add(Color::rgb(0.3, 0.3, 0.3).into()),
+        block7: materials.add(Color::rgb(0.2, 0.2, 0.2).into()),
+        block8: materials.add(Color::rgb(0.1, 0.1, 0.1).into()),
+        block9: materials.add(Color::rgb(0.0, 0.0, 0.0).into()),
     });
 }
 
@@ -211,17 +213,18 @@ fn block_spawn(
     mut cmd: Commands,
     mut ev: EventReader<SwipeEvent>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    q: Query<&Position, With<Block>>
+    q: Query<&Position, With<Block>>,
 ) {
     if ev.iter().next().is_none() {
         return;
     }
-    let all_choices = (0u32..HEIGHT).cartesian_product(0u32..WIDTH).collect::<HashSet<_>>();
+    let all_choices = (0u32..HEIGHT)
+        .cartesian_product(0u32..WIDTH)
+        .collect::<HashSet<_>>();
     let ex_choices = q.iter().map(|pos| (pos.x, pos.y)).collect::<HashSet<_>>();
     let rest = all_choices.difference(&ex_choices).collect::<Vec<_>>();
 
-    let idx = rand::random::<usize>() % rest.len();
-    let (x, y) = rest[idx];
+    let (x, y) = rest[rand::random::<usize>() % rest.len()];
 
     let v = rand::random::<u32>() % 1;
     cmd.spawn_bundle(SpriteBundle {
@@ -254,7 +257,8 @@ fn main() {
             CoreStage::PostUpdate,
             SystemSet::new()
                 .with_system(block_pos.system())
-                .with_system(block_scale.system()),
+                .with_system(block_scale.system())
+                .with_system(game_over.system())
         )
         .add_system(block_spawn.system())
         .add_startup_system(setup.system())
